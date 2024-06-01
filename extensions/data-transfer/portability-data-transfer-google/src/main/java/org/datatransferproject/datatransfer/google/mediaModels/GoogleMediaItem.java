@@ -30,6 +30,7 @@ import java.util.Date;
 import java.util.Optional;
 import org.datatransferproject.types.common.models.photos.PhotoModel;
 import org.datatransferproject.types.common.models.videos.VideoModel;
+import org.datatransferproject.types.common.models.FavoriteInfo;
 import org.apache.tika.Tika;
 import com.google.common.base.Strings;
 
@@ -68,6 +69,9 @@ public class GoogleMediaItem implements Serializable {
   //  services use to display the photos timeline, instead of uploadTime.
   private Date uploadedTime;
 
+  @JsonProperty("favoriteInfo")
+  private FavoriteInfo favoriteInfo;
+
   public boolean isPhoto() {
     return this.getMediaMetadata().getPhoto() != null;
   }
@@ -99,7 +103,8 @@ public class GoogleMediaItem implements Serializable {
         mediaItem.getId(),
         albumId.orElse(null),
         false /*inTempStore*/,
-        getCreationTime(mediaItem));
+        getCreationTime(mediaItem),
+        new FavoriteInfo(mediaItem.favoriteInfo.getFavorited(), parseIso8601DateTime(mediaItem.favoriteInfo.getLastUpdateTime().toString())));
   }
 
   public static PhotoModel convertToPhotoModel (
@@ -115,7 +120,8 @@ public class GoogleMediaItem implements Serializable {
         albumId.orElse(null),
         false  /*inTempStore*/,
         null  /*sha1*/,
-        getCreationTime(mediaItem));
+        getCreationTime(mediaItem),
+        new FavoriteInfo(mediaItem.favoriteInfo.getFavorited(), parseIso8601DateTime(mediaItem.favoriteInfo.getLastUpdateTime().toString())));
   }
 
   /**

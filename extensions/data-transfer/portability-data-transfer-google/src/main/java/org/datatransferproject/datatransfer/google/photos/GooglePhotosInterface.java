@@ -81,6 +81,8 @@ public class GooglePhotosInterface {
   private static final String ALBUM_ID_KEY = "albumId";
   private static final String ACCESS_TOKEN_KEY = "access_token";
   private static final String FILTERS_KEY = "filters";
+  private static final String INCLUDE_FEATURES_KEY = "includedFeatures";
+  private static final String FAVORITES_KEY = "FAVORITES";
   private static final String INCLUDE_ARCHIVED_KEY = "includeArchivedMedia";
   private static final Map<String, String> PHOTO_UPLOAD_PARAMS =
       ImmutableMap.of(
@@ -142,6 +144,9 @@ public class GooglePhotosInterface {
     if (pageToken.isPresent()) {
       params.put(TOKEN_KEY, pageToken.get());
     }
+
+    params.put(INCLUDE_FEATURES_KEY, ImmutableMap.of(FAVORITES_KEY, String.valueOf(true)));
+
     HttpContent content = new JsonHttpContent(this.jsonFactory, params);
     return makePostRequest(BASE_URL + "mediaItems:search", Optional.empty(), Optional.empty(),
         content, MediaItemSearchResponse.class);

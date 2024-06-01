@@ -30,6 +30,7 @@ import org.datatransferproject.datatransfer.google.gplus.GooglePlusExporter;
 import org.datatransferproject.datatransfer.google.mail.GoogleMailExporter;
 import org.datatransferproject.datatransfer.google.mail.GoogleMailImporter;
 import org.datatransferproject.datatransfer.google.media.GoogleMediaExporter;
+import org.datatransferproject.datatransfer.google.media.GoogleMediaImporter;
 import org.datatransferproject.datatransfer.google.music.GoogleMusicExporter;
 import org.datatransferproject.datatransfer.google.music.GoogleMusicImporter;
 import org.datatransferproject.datatransfer.google.photos.GooglePhotosExporter;
@@ -136,6 +137,13 @@ public class GoogleTransferExtension implements TransferExtension {
             idempotentImportExecutor,
             enableRetrying));
     importerBuilder.put(VIDEOS, new GoogleVideosImporter(appCredentials, jobStore, monitor));
+    importerBuilder.put(MEDIA, new GoogleMediaImporter(credentialFactory,
+        jobStore,
+        jsonFactory,
+        appCredentials,
+        monitor,
+        context.getSetting("googleWritesPerSecond", 1.0)));
+
     importerBuilder.put(MUSIC, new GoogleMusicImporter(credentialFactory, jsonFactory, monitor,
         context.getSetting("googleWritesPerSecond", 1.0)));
     importerMap = importerBuilder.build();

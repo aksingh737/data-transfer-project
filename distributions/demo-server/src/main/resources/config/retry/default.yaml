@@ -1,17 +1,39 @@
+
 # YAML formatting of a RetryStrategyLibrary
 # Currently defined per-distribution.  Later on extensions will be able to
 # define their own RetryStrategyLibraries, with custom RetryMappings and
 # RetryStrategies.
 strategyMappings:
+# Apple specific skippable errors
+- stacktraceRegexes:
+  - ".*APPLE PHOTOS IMPORT: Fail to upload content.*"
+  - ".*APPLE PHOTOS IMPORT: Fail to create album.*"
+  - ".*APPLE PHOTOS IMPORT: Fail to create media.*"
+  - ".*APPLE PHOTOS IMPORT: Fail to get upload url.*"
+  strategy: !<ExponentialSkip>
+    maxAttempts: 10
+    initialIntervalMillis: 1000
+    multiplier: 1.2
+# Apple specific non-retryable errors
 - regexes:
-  - "status code: 4\\d\\d"
+  - ".*APPLE PHOTOS IMPORT: iCloud Photos Library not found.*"
+  - ".*APPLE PHOTOS IMPORT: iCloud Storage is full.*"
   strategy: !<Fatal> {}
 - regexes:
-  - "simple"
+  - ".*400.*Bad Request.*"
+  - ".*403.*Forbidden.*"
+  strategy: !<Fatal> {}
+- regexes:
+  - ".*simple.*"
   strategy: !<Uniform>
-    maxAttempts: 5
-    intervalMillis: 1000
+    maxAttempts: 20
+    intervalMillis: 2000
+- regexes:
+  - ".*FlickrException.*5:.*Filetype.*"
+  strategy: !<Skip> {}
+# max delay time: 1.2^(26-1) * 1000ms = 95 seconds
+# max total time: SUM{n>=0}{n<26}1.2^n = 9.5 minutes
 defaultRetryStrategy: !<Exponential>
-  maxAttempts: 5
+  maxAttempts: 10
   initialIntervalMillis: 1000
-  multiplier: 1.5
+  multiplier: 1.2
