@@ -62,7 +62,7 @@ class StackdriverMonitor implements JobAwareMonitor {
     if (data != null) {
       for (Object datum : data) {
         if (datum instanceof Throwable) {
-          logMessage.append(format("\n%s", Throwables.getStackTraceAsString(((Throwable) datum))));
+          logMessage.append(format("\n%s", org.datatransferproject.types.common.ExceptionUtils.getStackTraceAsString(((Throwable) datum))));
         } else if (datum instanceof UUID) {
           logMessage.append(format("\nJobId: %s", ((UUID) datum)));
         } else if (datum instanceof EventCode) {

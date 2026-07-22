@@ -88,7 +88,7 @@ public class GoogleCloudIdempotentImportExecutor implements IdempotentImportExec
           ErrorDetail.builder()
               .setId(idempotentId)
               .setTitle(itemName)
-              .setException(Throwables.getStackTraceAsString(e))
+              .setException(org.datatransferproject.types.common.ExceptionUtils.getStackTraceAsString(e))
               .build();
       addError(idempotentId, errorDetail);
       monitor.severe(() -> jobIdPrefix + "Problem with importing item: " + errorDetail);
