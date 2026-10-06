@@ -21,30 +21,28 @@ import org.datatransferproject.spi.cloud.storage.TemporaryPerJobDataStore;
 import org.datatransferproject.spi.transfer.idempotentexecutor.IdempotentImportExecutor;
 import org.datatransferproject.spi.transfer.provider.ImportResult;
 import org.datatransferproject.spi.transfer.provider.Importer;
-import org.datatransferproject.types.common.models.photos.PhotoAlbum;
-import org.datatransferproject.types.common.models.photos.PhotoModel;
-import org.datatransferproject.types.common.models.photos.PhotosContainerResource;
+import org.datatransferproject.types.common.models.videos.VideoAlbum;
+import org.datatransferproject.types.common.models.videos.VideoModel;
+import org.datatransferproject.types.common.models.videos.VideosContainerResource;
 import org.datatransferproject.types.transfer.auth.TokensAndUrlAuthData;
 
 import java.util.UUID;
 
 /**
- * Imports photos into Amazon Photos from other DTP-supported services.
+ * Imports videos into Amazon Photos from other DTP-supported services.
  *
  * <p>The per-job client, album creation, download+MD5, upload, and duplicate/quota handling live in
- * {@link AmazonImportHelper} and are shared with the videos and media importers; this class only
- * iterates the photos container and supplies the photo-specific title and favorite flag.
+ * {@link AmazonImportHelper} and are shared with the photos and media importers; this class only
+ * iterates the videos container and maps each video onto those shared operations.
  */
-public class AmazonPhotosImporter
-    implements Importer<TokensAndUrlAuthData, PhotosContainerResource> {
+public class AmazonVideosImporter
+    implements Importer<TokensAndUrlAuthData, VideosContainerResource> {
 
   private final AmazonImportHelper importHelper;
-  private final AmazonPhotosTransmogrificationConfig transmogrificationConfig =
-      new AmazonPhotosTransmogrificationConfig();
   private final IdempotentImportExecutor retryingIdempotentExecutor;
   private final boolean enableRetrying;
 
-  public AmazonPhotosImporter(Monitor monitor, String clientId, String clientSecret,
+  public AmazonVideosImporter(Monitor monitor, String clientId, String clientSecret,
                               TemporaryPerJobDataStore dataStore,
                               IdempotentImportExecutor retryingIdempotentExecutor,
                               boolean enableRetrying) {
@@ -53,12 +51,12 @@ public class AmazonPhotosImporter
     this.enableRetrying = enableRetrying;
   }
 
-  AmazonPhotosImporter(Monitor monitor, TemporaryPerJobDataStore dataStore,
+  AmazonVideosImporter(Monitor monitor, TemporaryPerJobDataStore dataStore,
                        AmazonPhotosInterface client) {
     this(monitor, dataStore, client, null, false);
   }
 
-  AmazonPhotosImporter(Monitor monitor, TemporaryPerJobDataStore dataStore,
+  AmazonVideosImporter(Monitor monitor, TemporaryPerJobDataStore dataStore,
                        AmazonPhotosInterface client,
                        IdempotentImportExecutor retryingIdempotentExecutor,
                        boolean enableRetrying) {
@@ -70,9 +68,8 @@ public class AmazonPhotosImporter
   @Override
   public ImportResult importItem(UUID jobId, IdempotentImportExecutor idempotentImportExecutor,
                                  TokensAndUrlAuthData authData,
-                                 PhotosContainerResource data) throws Exception {
+                                 VideosContainerResource data) throws Exception {
     AmazonPhotosInterface client = importHelper.getOrCreateClient(jobId, authData);
-    data.transmogrify(transmogrificationConfig);
 
     // Prefer the platform's retrying executor when enabled so transient failures are retried
     // (per the host-configured RetryStrategyLibrary) before being recorded and skipped.
@@ -81,16 +78,16 @@ public class AmazonPhotosImporter
             ? retryingIdempotentExecutor
             : idempotentImportExecutor;
 
-    for (PhotoAlbum album : data.getAlbums()) {
+    for (VideoAlbum album : data.getAlbums()) {
       executor.executeAndSwallowIOExceptions(
           album.getId(), album.getName(),
           () -> importHelper.createAlbum(client, album.getId(), album.getName()));
     }
 
-    for (PhotoModel photo : data.getPhotos()) {
+    for (VideoModel video : data.getVideos()) {
       executor.executeAndSwallowIOExceptions(
-          photo.getIdempotentId(), photo.getTitle(),
-          () -> importHelper.uploadItem(client, jobId, UploadItemRequest.forPhoto(photo), executor));
+          video.getIdempotentId(), video.getName(),
+          () -> importHelper.uploadItem(client, jobId, UploadItemRequest.forVideo(video), executor));
     }
 
     return ImportResult.OK;

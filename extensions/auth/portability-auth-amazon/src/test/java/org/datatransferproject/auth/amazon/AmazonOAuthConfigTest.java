@@ -1,6 +1,7 @@
 package org.datatransferproject.auth.amazon;
 
 import static com.google.common.truth.Truth.assertThat;
+import static org.datatransferproject.types.common.models.DataVertical.MEDIA;
 import static org.datatransferproject.types.common.models.DataVertical.PHOTOS;
 import static org.datatransferproject.types.common.models.DataVertical.VIDEOS;
 
@@ -35,29 +36,49 @@ class AmazonOAuthConfigTest {
   void importScopesForPhotos() {
     assertThat(config.getImportScopes().get(PHOTOS))
         .containsExactly(
-            "photos::images:create",
-            "photos::albums:create",
-            "photos::albums:update");
+            "amazonphotos::images:create",
+            "amazonphotos::albums:create",
+            "amazonphotos::albums:update");
   }
 
   @Test
   void importScopesForVideos() {
     assertThat(config.getImportScopes().get(VIDEOS))
         .containsExactly(
-            "photos::videos:create",
-            "photos::albums:create",
-            "photos::albums:update");
+            "amazonphotos::videos:create",
+            "amazonphotos::albums:create",
+            "amazonphotos::albums:update");
+  }
+
+  @Test
+  void importScopesForMedia() {
+    // MEDIA is the unified vertical, so it requests the union of image, video and album scopes.
+    assertThat(config.getImportScopes().get(MEDIA))
+        .containsExactly(
+            "amazonphotos::images:create",
+            "amazonphotos::videos:create",
+            "amazonphotos::albums:create",
+            "amazonphotos::albums:update");
   }
 
   @Test
   void exportScopesForPhotos() {
     assertThat(config.getExportScopes().get(PHOTOS))
-        .containsExactly("photos::images:read", "photos::albums:read");
+        .containsExactly("amazonphotos::images:read", "amazonphotos::albums:read");
   }
 
   @Test
   void exportScopesForVideos() {
     assertThat(config.getExportScopes().get(VIDEOS))
-        .containsExactly("photos::videos:read", "photos::albums:read");
+        .containsExactly("amazonphotos::videos:read", "amazonphotos::albums:read");
+  }
+
+  @Test
+  void exportScopesForMedia() {
+    assertThat(config.getExportScopes().get(MEDIA))
+        .containsExactly(
+            "amazonphotos::images:read",
+            "amazonphotos::videos:read",
+            "amazonphotos::albums:read");
   }
 }

@@ -8,6 +8,7 @@ import org.datatransferproject.types.common.models.DataVertical;
 import java.util.Map;
 import java.util.Set;
 
+import static org.datatransferproject.types.common.models.DataVertical.MEDIA;
 import static org.datatransferproject.types.common.models.DataVertical.PHOTOS;
 import static org.datatransferproject.types.common.models.DataVertical.VIDEOS;
 
@@ -33,23 +34,38 @@ public class AmazonOAuthConfig implements OAuth2Config {
 
   @Override
   public Map<DataVertical, Set<String>> getImportScopes() {
-    return ImmutableMap.<DataVertical, Set<String>>builder()
-        .put(PHOTOS, ImmutableSet.of(
-            "photos::images:create",
-            "photos::albums:create",
-            "photos::albums:update"))
-        .put(VIDEOS, ImmutableSet.of(
-            "photos::videos:create",
-            "photos::albums:create",
-            "photos::albums:update"))
-        .build();
+    return ImmutableMap.of(
+        PHOTOS, ImmutableSet.of(
+            "amazonphotos::images:create",
+            "amazonphotos::albums:create",
+            "amazonphotos::albums:update"),
+        VIDEOS, ImmutableSet.of(
+            "amazonphotos::videos:create",
+            "amazonphotos::albums:create",
+            "amazonphotos::albums:update"),
+        // MEDIA is the unified vertical (photos + videos + albums), so it needs the union of the
+        // image, video and album scopes.
+        MEDIA, ImmutableSet.of(
+            "amazonphotos::images:create",
+            "amazonphotos::videos:create",
+            "amazonphotos::albums:create",
+            "amazonphotos::albums:update"));
   }
 
   @Override
   public Map<DataVertical, Set<String>> getExportScopes() {
-    return ImmutableMap.<DataVertical, Set<String>>builder()
-        .put(PHOTOS, ImmutableSet.of("photos::images:read", "photos::albums:read"))
-        .put(VIDEOS, ImmutableSet.of("photos::videos:read", "photos::albums:read"))
-        .build();
+    return ImmutableMap.of(
+        PHOTOS, ImmutableSet.of(
+            "amazonphotos::images:read",
+            "amazonphotos::albums:read"),
+        VIDEOS, ImmutableSet.of(
+            "amazonphotos::videos:read",
+            "amazonphotos::albums:read"),
+        // MEDIA is the unified vertical (photos + videos + albums); declare the union so the auth
+        // framework can build import/export generators symmetrically with PHOTOS/VIDEOS.
+        MEDIA, ImmutableSet.of(
+            "amazonphotos::images:read",
+            "amazonphotos::videos:read",
+            "amazonphotos::albums:read"));
   }
 }
