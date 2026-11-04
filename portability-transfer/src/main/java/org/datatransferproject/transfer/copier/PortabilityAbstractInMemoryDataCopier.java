@@ -17,6 +17,7 @@ package org.datatransferproject.transfer.copier;
 
 import com.google.cloud.datastore.DatastoreException;
 import com.google.common.base.Stopwatch;
+import com.google.common.collect.ImmutableList;
 import com.google.inject.Provider;
 import java.io.IOException;
 import java.time.Clock;
@@ -40,6 +41,7 @@ import org.datatransferproject.spi.transfer.provider.ImportResult;
 import org.datatransferproject.spi.transfer.provider.Importer;
 import org.datatransferproject.spi.transfer.types.CopyException;
 import org.datatransferproject.spi.transfer.types.CopyExceptionWithFailureReason;
+import org.datatransferproject.spi.transfer.types.FetchableUrlExpiredException;
 import org.datatransferproject.transfer.Annotations;
 import org.datatransferproject.transfer.CallableExporter;
 import org.datatransferproject.transfer.CallableImporter;
@@ -53,11 +55,20 @@ import org.datatransferproject.types.common.models.photos.PhotosContainerResourc
 import org.datatransferproject.types.common.models.videos.VideosContainerResource;
 import org.datatransferproject.types.transfer.auth.AuthData;
 import org.datatransferproject.types.transfer.errors.ErrorDetail;
+import org.datatransferproject.types.transfer.retry.NoRetryStrategy;
 import org.datatransferproject.types.transfer.retry.RetryException;
+import org.datatransferproject.types.transfer.retry.RetryStrategy;
 import org.datatransferproject.types.transfer.retry.RetryStrategyLibrary;
 import org.datatransferproject.types.transfer.retry.RetryingCallable;
 
 public abstract class PortabilityAbstractInMemoryDataCopier implements InMemoryDataCopier {
+  /**
+   * How many times a page is exported again when importing it fails with {@link
+   * FetchableUrlExpiredException}. Each import skips the items imported before it, so one page can
+   * take up to four URL lifetimes to import.
+   */
+  private static final int MAX_REEXPORTS_PER_PAGE = 3;
+
   /**
    * Lazy evaluate exporter and importer as their providers depend on the polled {@code
    * PortabilityJob} which is not available at startup.
@@ -140,7 +151,15 @@ public abstract class PortabilityAbstractInMemoryDataCopier implements InMemoryD
           job.transferMode() == null ? TransferMode.DATA_TRANSFER : job.transferMode();
       switch (transferMode) {
         case DATA_TRANSFER:
-          importIteration(jobId, importAuthData, jobIdPrefix, copyIteration, exportedData);
+          exportResult =
+              importReexportingOnExpiredUrls(
+                  jobId,
+                  exportAuthData,
+                  importAuthData,
+                  exportInformation,
+                  jobIdPrefix,
+                  copyIteration,
+                  exportResult);
           break;
         case SIZE_CALCULATION:
           sizeCalculationIteration(jobId, jobIdPrefix, exportedData);
@@ -153,6 +172,51 @@ public abstract class PortabilityAbstractInMemoryDataCopier implements InMemoryD
     }
 
     return exportResult;
+  }
+
+  /**
+   * Imports the data in {@code exportResult}. If that fails with {@link
+   * FetchableUrlExpiredException}, exports the same page again, to get fresh URLs, and imports
+   * that, up to {@link #MAX_REEXPORTS_PER_PAGE} times. The {@link IdempotentImportExecutor} skips
+   * the items imported before.
+   *
+   * @return the page's latest export result, which the copy continues from
+   */
+  private ExportResult<?> importReexportingOnExpiredUrls(
+      UUID jobId,
+      AuthData exportAuthData,
+      AuthData importAuthData,
+      Optional<ExportInformation> exportInformation,
+      String jobIdPrefix,
+      int copyIteration,
+      ExportResult<?> exportResult)
+      throws CopyException {
+    for (int reexports = 0; ; reexports++) {
+      try {
+        importIteration(
+            jobId, importAuthData, jobIdPrefix, copyIteration, exportResult.getExportedData());
+        return exportResult;
+      } catch (FetchableUrlExpiredException e) {
+        if (reexports == MAX_REEXPORTS_PER_PAGE) {
+          throw e;
+        }
+        int reexport = reexports + 1;
+        monitor.info(
+            () ->
+                jobIdPrefix
+                    + "Download URLs expired during import, exporting the page again ("
+                    + reexport
+                    + " of "
+                    + MAX_REEXPORTS_PER_PAGE
+                    + "), copy iteration: "
+                    + copyIteration);
+      }
+      exportResult =
+          exportIteration(jobId, exportAuthData, exportInformation, jobIdPrefix, copyIteration);
+      if (exportResult.getExportedData() == null) {
+        return exportResult;
+      }
+    }
   }
 
   private ExportResult<?> exportIteration(
@@ -221,7 +285,7 @@ public abstract class PortabilityAbstractInMemoryDataCopier implements InMemoryD
     RetryingCallable<ImportResult> retryingImporter =
         new RetryingCallable<>(
             callableImporter,
-            retryStrategyLibraryProvider.get(),
+            noRetriesOnExpiredUrls(retryStrategyLibraryProvider.get()),
             Clock.systemUTC(),
             monitor,
             JobMetadata.getDataType(),
@@ -297,5 +361,25 @@ public abstract class PortabilityAbstractInMemoryDataCopier implements InMemoryD
       return (CopyExceptionWithFailureReason) e.getCause();
     }
     return new CopyException(jobIdPrefix + "Error happened during " + suffix, e);
+  }
+
+  /**
+   * Returns {@code library}, except that it never retries {@link FetchableUrlExpiredException}: a
+   * retry would import the same data, with the same expired URLs. {@link
+   * #importReexportingOnExpiredUrls} exports the page again instead.
+   */
+  private static RetryStrategyLibrary noRetriesOnExpiredUrls(RetryStrategyLibrary library) {
+    if (library == null) {
+      // As before, RetryingCallable then fails on the first exception.
+      return null;
+    }
+    return new RetryStrategyLibrary(ImmutableList.of(), library.getDefaultRetryStrategy()) {
+      @Override
+      public RetryStrategy checkoutRetryStrategy(Throwable throwable) {
+        return throwable instanceof FetchableUrlExpiredException
+            ? new NoRetryStrategy()
+            : library.checkoutRetryStrategy(throwable);
+      }
+    };
   }
 }
