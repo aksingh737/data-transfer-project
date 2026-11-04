@@ -25,10 +25,12 @@ import com.google.api.client.http.*;
 import com.google.api.client.http.javanet.NetHttpTransport;
 import com.google.api.client.json.JsonFactory;
 import com.google.common.base.Preconditions;
+import com.google.common.base.Strings;
 import com.google.common.io.CharStreams;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.util.*;
+import org.datatransferproject.transfer.microsoft.common.MicrosoftCredentialFactory;
 import org.datatransferproject.transfer.microsoft.driveModels.MicrosoftDriveItemsResponse;
 import org.datatransferproject.transfer.microsoft.driveModels.MicrosoftSpecialFolder;
 
@@ -40,10 +42,13 @@ public class MicrosoftMediaInterface {
   private final ObjectMapper objectMapper =
       new ObjectMapper().configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
   private final HttpTransport httpTransport = new NetHttpTransport();
+  private final MicrosoftCredentialFactory credentialFactory;
   private final Credential credential;
   private final JsonFactory jsonFactory;
 
-  MicrosoftMediaInterface(Credential credential, JsonFactory jsonFactory) {
+  MicrosoftMediaInterface(MicrosoftCredentialFactory credentialFactory, Credential credential,
+      JsonFactory jsonFactory) {
+    this.credentialFactory = credentialFactory;
     this.credential = credential;
     this.jsonFactory = jsonFactory;
   }
@@ -85,7 +90,7 @@ public class MicrosoftMediaInterface {
     HttpRequest getRequest = requestFactory.buildGetRequest(new GenericUrl(url));
     setAuthorization(getRequest);
 
-    HttpResponse response = getRequest.execute();
+    HttpResponse response = executeWithTokenRefresh(getRequest);
     int statusCode = response.getStatusCode();
     if (statusCode != 200) {
       throw new IOException(
@@ -93,6 +98,33 @@ public class MicrosoftMediaInterface {
     }
     String result = CharStreams.toString(new InputStreamReader(response.getContent(), UTF_8));
     return objectMapper.readValue(result, tClass);
+  }
+
+  /**
+   * Executes the request. If Graph rejects the access token with a 401, as it does once the token
+   * expires (60 to 90 minutes after it's issued), refreshes the credential once and retries once.
+   */
+  private HttpResponse executeWithTokenRefresh(HttpRequest request) throws IOException {
+    try {
+      return request.execute();
+    } catch (HttpResponseException e) {
+      // Without a refresh token there's nothing to refresh, so fail as before.
+      if (e.getStatusCode() != 401 || Strings.isNullOrEmpty(credential.getRefreshToken())) {
+        throw e;
+      }
+    }
+    // If the refresh fails, its exception propagates, as in MicrosoftMediaImporter.
+    credentialFactory.refreshCredential(credential);
+    setAuthorization(request);
+    try {
+      return request.execute();
+    } catch (HttpResponseException e) {
+      if (e.getStatusCode() != 401) {
+        throw e;
+      }
+      throw new IOException(
+          "Microsoft Graph still returned 401 Unauthorized after refreshing the access token", e);
+    }
   }
 
   private void setAuthorization(HttpRequest request) throws IOException {

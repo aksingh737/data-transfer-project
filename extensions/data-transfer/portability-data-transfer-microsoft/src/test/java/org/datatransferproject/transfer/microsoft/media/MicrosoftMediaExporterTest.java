@@ -18,12 +18,19 @@ package org.datatransferproject.transfer.microsoft.media;
 
 import static com.google.common.truth.Truth.assertThat;
 import static org.datatransferproject.transfer.microsoft.media.MicrosoftMediaExporter.DRIVE_TOKEN_PREFIX;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
+import com.google.api.client.auth.oauth2.Credential;
+import com.google.api.client.http.HttpResponseException;
+import com.google.api.client.http.javanet.NetHttpTransport;
 import com.google.api.client.json.jackson2.JacksonFactory;
+import com.squareup.okhttp.mockwebserver.MockResponse;
+import com.squareup.okhttp.mockwebserver.MockWebServer;
 import java.io.IOException;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Date;
 import java.util.List;
@@ -35,6 +42,7 @@ import org.datatransferproject.spi.transfer.provider.ExportResult;
 import org.datatransferproject.spi.transfer.types.ContinuationData;
 import org.datatransferproject.transfer.microsoft.common.MicrosoftCredentialFactory;
 import org.datatransferproject.transfer.microsoft.driveModels.*;
+import org.datatransferproject.types.common.ExportInformation;
 import org.datatransferproject.types.common.StringPaginationToken;
 import org.datatransferproject.types.common.models.ContainerResource;
 import org.datatransferproject.types.common.models.IdOnlyContainerResource;
@@ -42,7 +50,9 @@ import org.datatransferproject.types.common.models.media.MediaAlbum;
 import org.datatransferproject.types.common.models.media.MediaContainerResource;
 import org.datatransferproject.types.common.models.photos.PhotoModel;
 import org.datatransferproject.types.common.models.videos.VideoModel;
+import org.datatransferproject.types.transfer.auth.AppCredentials;
 import org.datatransferproject.types.transfer.auth.TokensAndUrlAuthData;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -62,12 +72,14 @@ public class MicrosoftMediaExporterTest {
   private TokensAndUrlAuthData token;
   private MicrosoftMediaExporter microsoftMediaExporter;
   private MicrosoftMediaInterface mediaInterface;
+  private MicrosoftCredentialFactory credentialFactory;
+  private final MockWebServer server = new MockWebServer();
 
   private MicrosoftDriveItemsResponse driveItemsResponse;
 
   @BeforeEach
   public void setUp() throws IOException {
-    MicrosoftCredentialFactory credentialFactory = mock(MicrosoftCredentialFactory.class);
+    credentialFactory = mock(MicrosoftCredentialFactory.class);
     mediaInterface = mock(MicrosoftMediaInterface.class);
     driveItemsResponse = mock(MicrosoftDriveItemsResponse.class);
     Monitor monitor = mock(Monitor.class);
@@ -81,6 +93,11 @@ public class MicrosoftMediaExporterTest {
              any(MicrosoftSpecialFolder.FolderType.class)))
         .thenReturn(driveItemsResponse);
     verifyNoInteractions(credentialFactory);
+  }
+
+  @AfterEach
+  public void tearDown() throws IOException {
+    server.shutdown();
   }
 
   @Test
@@ -448,6 +465,136 @@ public class MicrosoftMediaExporterTest {
 
     return microsoftMediaExporter.exportOneDrivePhotos(
         null, Optional.of(new IdOnlyContainerResource(FOLDER_ID)), Optional.empty(), uuid);
+  }
+
+  @Test
+  public void exportRefreshesTokenOnceAndRetriesAfter401() throws Exception {
+    server.enqueue(new MockResponse().setResponseCode(401));
+    server.enqueue(drivePageResponse(null /*nextPageLink*/));
+
+    ExportResult<MediaContainerResource> result =
+        exporterWithTokenRefresh().export(uuid, authData("job-token"), drivePage("/page"));
+
+    verify(credentialFactory, times(1)).refreshCredential(any());
+    assertThat(authorizationHeaders())
+        .containsExactly("Bearer job-token", "Bearer job-token-refreshed")
+        .inOrder();
+    assertThat(result.getExportedData().getPhotos().stream()
+            .map(PhotoModel::getTitle).collect(Collectors.toList()))
+        .containsExactly(PHOTO_FILENAME);
+  }
+
+  @Test
+  public void exportFailsAfterOneRefreshWhenStillUnauthorized() throws Exception {
+    server.enqueue(new MockResponse().setResponseCode(401));
+    server.enqueue(new MockResponse().setResponseCode(401));
+    MicrosoftMediaExporter exporter = exporterWithTokenRefresh();
+
+    IOException e = assertThrows(IOException.class,
+        () -> exporter.export(uuid, authData("job-token"), drivePage("/page")));
+
+    assertThat(e).hasMessageThat().contains("401 Unauthorized after refreshing");
+    assertThat(e).hasCauseThat().isInstanceOf(HttpResponseException.class);
+    verify(credentialFactory, times(1)).refreshCredential(any());
+    assertThat(server.getRequestCount()).isEqualTo(2);
+  }
+
+  @Test
+  public void exportFailsWithoutRetryingWhenRefreshFails() throws Exception {
+    server.enqueue(new MockResponse().setResponseCode(401));
+    MicrosoftMediaExporter exporter = exporterWithTokenRefresh();
+    IOException refreshFailure = new IOException("refresh rejected");
+    doThrow(refreshFailure).when(credentialFactory).refreshCredential(any());
+
+    IOException e = assertThrows(IOException.class,
+        () -> exporter.export(uuid, authData("job-token"), drivePage("/page")));
+
+    assertThat(e).isSameAs(refreshFailure);
+    assertThat(server.getRequestCount()).isEqualTo(1);
+  }
+
+  @Test
+  public void exportDoesNotRefreshWithoutRefreshToken() throws Exception {
+    server.enqueue(new MockResponse().setResponseCode(401));
+    MicrosoftMediaExporter exporter = exporterWithTokenRefresh();
+    TokensAndUrlAuthData authData =
+        new TokensAndUrlAuthData("job-token", null, server.url("/token").toString());
+
+    HttpResponseException e = assertThrows(HttpResponseException.class,
+        () -> exporter.export(uuid, authData, drivePage("/page")));
+
+    assertThat(e.getStatusCode()).isEqualTo(401);
+    verify(credentialFactory, never()).refreshCredential(any());
+  }
+
+  @Test
+  public void exportReusesRefreshedTokenOnLaterPagesOfTheSameJobOnly() throws Exception {
+    server.enqueue(new MockResponse().setResponseCode(401));
+    server.enqueue(drivePageResponse(server.url("/page2").toString()));
+    server.enqueue(drivePageResponse(null /*nextPageLink*/));
+    server.enqueue(drivePageResponse(null /*nextPageLink*/));
+    MicrosoftMediaExporter exporter = exporterWithTokenRefresh();
+    TokensAndUrlAuthData authData = authData("job-token");
+
+    ExportResult<MediaContainerResource> firstPage =
+        exporter.export(uuid, authData, drivePage("/page1"));
+    exporter.export(uuid, authData, Optional.of(
+        new ExportInformation(firstPage.getContinuationData().getPaginationData(), null)));
+    exporter.export(UUID.randomUUID(), authData("other-job-token"), drivePage("/other-job"));
+
+    verify(credentialFactory, times(1)).refreshCredential(any());
+    verify(credentialFactory, times(2)).createCredential(any());
+    assertThat(authorizationHeaders())
+        .containsExactly(
+            "Bearer job-token", // First page, rejected.
+            "Bearer job-token-refreshed", // First page, retried.
+            "Bearer job-token-refreshed", // Second page reuses the refreshed credential.
+            "Bearer other-job-token") // Another job uses its own credential.
+        .inOrder();
+  }
+
+  /**
+   * Returns an exporter that builds its own media interface for each job. Each job's credential is
+   * built from its auth data as in production, and refreshing it appends "-refreshed" to the
+   * access token.
+   */
+  private MicrosoftMediaExporter exporterWithTokenRefresh() throws IOException {
+    MicrosoftCredentialFactory realFactory = new MicrosoftCredentialFactory(
+        new NetHttpTransport(), new JacksonFactory(), new AppCredentials("appKey", "appSecret"));
+    when(credentialFactory.createCredential(any()))
+        .thenAnswer(invocation -> realFactory.createCredential(invocation.getArgument(0)));
+    when(credentialFactory.refreshCredential(any())).thenAnswer(invocation -> {
+      Credential credential = invocation.getArgument(0);
+      return credential.setAccessToken(credential.getAccessToken() + "-refreshed");
+    });
+    return new MicrosoftMediaExporter(credentialFactory, new JacksonFactory(), mock(Monitor.class));
+  }
+
+  private TokensAndUrlAuthData authData(String accessToken) {
+    return new TokensAndUrlAuthData(accessToken, "refreshToken", server.url("/token").toString());
+  }
+
+  /** Points an export at a page of drive items on the mock server, as pagination does. */
+  private Optional<ExportInformation> drivePage(String path) {
+    return Optional.of(new ExportInformation(
+        new StringPaginationToken(DRIVE_TOKEN_PREFIX + server.url(path)), null));
+  }
+
+  /** Returns a page holding one photo, linking to the next page if there is one. */
+  private MockResponse drivePageResponse(String nextPageLink) {
+    String nextPage =
+        nextPageLink == null ? "" : ", \"@odata.nextLink\": \"" + nextPageLink + "\"";
+    return new MockResponse().setBody("{\"value\": [{\"id\": \"" + PHOTO_ID + "\", \"name\": \""
+        + PHOTO_FILENAME + "\", \"file\": {\"mimeType\": \"image/jpeg\"}}]" + nextPage + "}");
+  }
+
+  /** Returns the Authorization header of each request the mock server received, in order. */
+  private List<String> authorizationHeaders() throws InterruptedException {
+    List<String> headers = new ArrayList<>();
+    for (int i = server.getRequestCount(); i > 0; i--) {
+      headers.add(server.takeRequest().getHeader("Authorization"));
+    }
+    return headers;
   }
 
   /** Sets up a response with a single album, containing photos and/or videos. */

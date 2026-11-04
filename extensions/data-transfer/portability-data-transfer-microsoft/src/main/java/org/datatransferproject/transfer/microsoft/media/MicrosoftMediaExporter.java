@@ -25,7 +25,9 @@ import java.time.OffsetDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import org.datatransferproject.api.launcher.Monitor;
@@ -55,11 +57,23 @@ import org.datatransferproject.types.transfer.auth.TokensAndUrlAuthData;
 public class MicrosoftMediaExporter
     implements Exporter<TokensAndUrlAuthData, MediaContainerResource> {
   static final String DRIVE_TOKEN_PREFIX = "drive:";
+  private static final int MAX_CACHED_JOBS = 1000;
 
   private final MicrosoftCredentialFactory credentialFactory;
   private final JsonFactory jsonFactory;
   private final Monitor monitor;
   private volatile MicrosoftMediaInterface photosInterface;
+  // One media interface, and so one credential, per job: a token refreshed on one page is reused
+  // on the job's later pages and is never used for another job. Access-ordered and capped so a
+  // long-lived, multi-job process can't accumulate them; a running job whose entry was evicted
+  // just builds a new one on its next page. Guarded by this.
+  private final Map<UUID, MicrosoftMediaInterface> mediaInterfacesByJob =
+      new LinkedHashMap<UUID, MicrosoftMediaInterface>(16, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<UUID, MicrosoftMediaInterface> eldest) {
+          return size() > MAX_CACHED_JOBS;
+        }
+      };
 
   public MicrosoftMediaExporter(
       MicrosoftCredentialFactory credentialFactory, JsonFactory jsonFactory, Monitor monitor) {
@@ -107,10 +121,10 @@ public class MicrosoftMediaExporter
     MicrosoftDriveItemsResponse driveItemsResponse;
     if (paginationData.isPresent() || albumData.isPresent()) {
       driveItemsResponse =
-          getOrCreateMediaInterface(authData).getDriveItems(albumId, paginationUrl);
+          getOrCreateMediaInterface(jobId, authData).getDriveItems(albumId, paginationUrl);
     } else {
-      driveItemsResponse = getOrCreateMediaInterface(authData).getDriveItemsFromSpecialFolder(
-          MicrosoftSpecialFolder.FolderType.photos);
+      driveItemsResponse = getOrCreateMediaInterface(jobId, authData)
+          .getDriveItemsFromSpecialFolder(MicrosoftSpecialFolder.FolderType.photos);
     }
 
     PaginationData nextPageData = setNextPageToken(driveItemsResponse);
@@ -251,12 +265,14 @@ public class MicrosoftMediaExporter
   }
 
   private synchronized MicrosoftMediaInterface getOrCreateMediaInterface(
-      TokensAndUrlAuthData authData) {
-    return photosInterface == null ? makeMediaInterface(authData) : photosInterface;
+      UUID jobId, TokensAndUrlAuthData authData) {
+    return photosInterface == null
+        ? mediaInterfacesByJob.computeIfAbsent(jobId, id -> makeMediaInterface(authData))
+        : photosInterface;
   }
 
   private synchronized MicrosoftMediaInterface makeMediaInterface(TokensAndUrlAuthData authData) {
     Credential credential = credentialFactory.createCredential(authData);
-    return new MicrosoftMediaInterface(credential, jsonFactory);
+    return new MicrosoftMediaInterface(credentialFactory, credential, jsonFactory);
   }
 }
